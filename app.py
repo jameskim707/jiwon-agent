@@ -1,4 +1,4 @@
-# 지원사업 찾기 에이전트 (라이너 해커톤 .EXE-THON 출품작 3차 버전: 준비 서류 체크리스트·달력 저장 추가)
+# 지원사업 찾기 에이전트 (라이너 해커톤 .EXE-THON 출품작 4차 버전: 실행 계획·문의처 전화 추가)
 # 흐름: 상황 입력 → Liner Model이 검색어 생성 → Liner Search로 공고 검색 (공식 사이트 우선)
 #      → 공고 원문 페이지를 직접 읽어 마감일·자격 발췌
 #      → Liner Model이 자격 판단·쉬운 말 요약 → 모집 중 / 지난 공고 분류, 마감일순 정렬
@@ -80,6 +80,12 @@ button[data-testid="baseButton-primary"]:hover { background: #0A4855; color: #FF
 .tally .t-past { background: #EEF0F3; color: #4B5563; }
 h3 { font-size: 1.3rem !important; }
 .body h3 { font-size: 1.2rem !important; }
+.call { display: inline-block; margin-left: 0.4rem; padding: 0.15rem 0.7rem; border-radius: 999px;
+  background: #0E5E6F; color: #FFFFFF !important; font-weight: 700; font-size: 0.95rem; text-decoration: none !important; }
+.task { display: flex; gap: 0.7rem; align-items: baseline; }
+.kind { flex: none; font-size: 0.8rem; font-weight: 700; padding: 0.1rem 0.5rem; border-radius: 6px; background: #EEF6F8; color: #0E5E6F; }
+.kind.k-접수 { background: #FDECEA; color: #B42318; }
+.kind.k-전화 { background: #FFF2D6; color: #8A5300; }
 .poweredby { font-size: 0.85rem; color: #4B5563; line-height: 1.6; margin-top: 0.4rem; }
 .poweredby b { color: #0E5E6F; }
 .card { display: flex; gap: 1.1rem; align-items: flex-start; }
@@ -185,7 +191,8 @@ def _liner_search_raw(query, max_results=8, recent=True):
 OFFICIAL_SUFFIX = (".go.kr", ".or.kr", ".re.kr")
 KEYWORDS = ["신청기간", "접수기간", "모집기간", "신청 기간", "접수 기간", "마감", "공고일",
             "지원대상", "신청자격", "지원 대상", "지원내용", "지원 내용", "지원규모",
-            "제출서류", "제출 서류", "구비서류", "구비 서류", "신청서류", "첨부서류", "증빙서류"]
+            "제출서류", "제출 서류", "구비서류", "구비 서류", "신청서류", "첨부서류", "증빙서류",
+            "문의", "문의처", "담당", "연락처", "전화"]
 
 
 BLOCKED_HOSTS = ("youtube.com", "youtu.be", "instagram.com", "facebook.com", "tiktok.com",
@@ -315,7 +322,8 @@ def judge(profile, results):
  "verdict": "가능" 또는 "확인 필요" 또는 "해당 없음",
  "reason": "그렇게 판단한 이유 한 문장",
  "documents": ["원문 발췌에 적힌 제출 서류 이름들 (예: '사업자등록증 사본'). 원문에 서류 목록이 없으면 빈 배열 []. 절대 지어내지 마세요"],
- "next_month": "지난 공고일 때만: 다음 공고가 나올 것으로 예상되는 달 YYYY-MM. 근거 없으면 null"
+ "next_month": "지난 공고일 때만: 다음 공고가 나올 것으로 예상되는 달 YYYY-MM. 근거 없으면 null",
+ "contact": "원문 발췌에 적힌 담당 부서와 전화번호 (예: '통영시청 수산과 055-650-0000'). 원문에 없으면 null. 전화번호를 절대 지어내지 마세요"
 }}
 
 status: 오늘 날짜와 마감일을 비교해 정하세요. 마감일이 지났으면 "지난 공고".
@@ -374,6 +382,78 @@ def draft_application(profile, item):
 - 제출 서류가 주어졌으면 맨 끝에 "함께 낼 서류" 체크 목록(- [ ] 형식)으로 정리하세요.
 - 맨 끝에 "제출 전 공고 원문의 서식과 필요 서류를 꼭 확인하세요."를 넣으세요."""
     return llm(prompt, max_tokens=2500)
+
+
+PHONE_RE = re.compile(r"(0\d{1,2}|1\d{3})[-.\s)]?\d{3,4}[-.\s]?\d{4}|1\d{3}[-.\s]\d{4}")
+
+
+def phone_of(text):
+    """문의처 문장에서 전화번호 하나를 꺼내 (보여줄 글자, tel: 번호)로 돌려줌"""
+    m = PHONE_RE.search(text or "")
+    if not m:
+        return None
+    shown = m.group(0)
+    return shown, re.sub(r"\D", "", shown)
+
+
+def make_plan(profile, chosen):
+    """고른 지원사업들로 오늘부터 마감까지 날짜별 할 일 목록을 만든다."""
+    listing = "\n".join(
+        f"- 사업: {it.get('name')}\n  상태: {it.get('status')} / 자격 판단: {it.get('verdict')} ({it.get('reason')})\n"
+        f"  마감일: {it.get('deadline') or '알 수 없음'}\n  재공고 예상: {it.get('next_expected') or '-'}\n"
+        f"  제출 서류: {', '.join(it.get('documents') or []) or '원문 확인 필요'}\n  문의처: {it.get('contact') or '원문 확인 필요'}"
+        for it in chosen
+    )
+    system = "당신은 중장년 신청자가 지원사업을 놓치지 않고 실제로 신청하도록 돕는 실행 코치입니다. 주어진 정보에 없는 사실은 지어내지 않습니다."
+    prompt = f"""오늘 날짜: {TODAY.isoformat()} ({'월화수목금토일'[TODAY.weekday()]}요일)
+신청자 상황: {profile}
+
+아래 지원사업들을 실제로 신청하기 위한 날짜별 할 일 목록을 만드세요.
+
+{listing}
+
+규칙:
+- 날짜는 오늘부터 각 사업 마감일 사이로 잡으세요. 접수는 마감 2일 전까지 끝내도록 여유를 두세요.
+- 순서: 자격이 '확인 필요'면 먼저 문의처에 전화로 확인 → 서류 떼기 → 신청서 작성 → 접수.
+- 서류는 제출 서류 목록에 있는 것만 할 일로 만드세요. 목록이 없으면 '공고 원문에서 제출 서류 확인하기'를 할 일로 넣으세요.
+- 전화번호를 지어내지 마세요. 문의처를 모르면 '공고 원문에서 문의처 찾아 전화하기'로 쓰세요.
+- 마감일을 모르는 사업은 이번 주 안에 '원문에서 마감일 확인하기'를 넣으세요.
+- 지난 공고는 재공고 전에 미리 할 수 있는 준비(서류 미리 떼기 등)만 넣고, 재공고 예상 달이 있으면 그 달 1일에 '재공고 확인'을 넣으세요.
+- 하루에 할 일은 2개 이하로, 중장년이 부담 없게 나누세요. 전체 15개 이하.
+- 할 일 문장은 "무엇을 어디서" 하는지 짧고 쉬운 말로.
+
+JSON 배열로만 답하세요. 각 항목:
+{{"date": "YYYY-MM-DD", "program": "사업 이름", "kind": "전화" 또는 "서류" 또는 "작성" 또는 "접수" 또는 "확인", "task": "할 일 한 문장"}}"""
+    tasks = parse_json(llm(prompt, system=system, max_tokens=3000))
+    out = []
+    for t in tasks:
+        if not isinstance(t, dict) or not t.get("task"):
+            continue
+        try:
+            d = dt.date.fromisoformat(str(t.get("date")))
+        except ValueError:
+            d = TODAY
+        t["date"] = max(d, TODAY).isoformat()
+        out.append(t)
+    return sorted(out, key=lambda t: t["date"])
+
+
+def tasks_ics(tasks):
+    lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//jiwon-agent//KO", "CALSCALE:GREGORIAN"]
+    stamp = dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    for t in tasks:
+        day = dt.date.fromisoformat(t["date"])
+        title = f"[{t.get('kind') or '할 일'}] {t['task']}"
+        lines += [
+            "BEGIN:VEVENT", f"UID:{uuid.uuid4()}@jiwon-agent", f"DTSTAMP:{stamp}",
+            f"DTSTART;VALUE=DATE:{day.strftime('%Y%m%d')}",
+            f"DTEND;VALUE=DATE:{(day + dt.timedelta(days=1)).strftime('%Y%m%d')}",
+            f"SUMMARY:{_ics_text(title)}", f"DESCRIPTION:{_ics_text('사업: ' + str(t.get('program') or ''))}",
+            "BEGIN:VALARM", "ACTION:DISPLAY", f"DESCRIPTION:{_ics_text(title)}", "TRIGGER:PT9H", "END:VALARM",
+            "END:VEVENT",
+        ]
+    lines.append("END:VCALENDAR")
+    return "\r\n".join(_fold(l) for l in lines) + "\r\n"
 
 
 # ---------- 달력(.ics) 만들기 ----------
@@ -491,6 +571,7 @@ if form.button("지원사업 찾기", type="primary", use_container_width=True):
     profile = f"{region}, {job} {years}년차, {age}세" + (f", {memo}" if memo else "")
     st.session_state.profile = profile
     st.session_state.draft = None
+    st.session_state.plan = None
     with st.status("공고를 찾고 있어요...", expanded=True) as status:
         queries = make_queries(profile, f"{region} {job}")
         # AI 검색어가 너무 길거나 좁을 때를 대비해 단순한 검색어도 항상 함께
@@ -550,6 +631,10 @@ items = st.session_state.get("items")
 badge = {"가능": "ok", "확인 필요": "check", "해당 없음": "no"}
 
 
+def ordered_items(items):
+    return [it for it in items if not is_past(it)] + [it for it in items if is_past(it)]
+
+
 def render_extras(it, i):
     """카드 바로 아래: 준비 서류 체크리스트와 달력 저장 버튼"""
     docs = [d for d in (it.get("documents") or []) if isinstance(d, str) and d.strip()]
@@ -587,6 +672,11 @@ def render_card(it):
     src = (f"<p class='src'>출처: <a href='{escape(url)}' target='_blank' rel='noopener'>"
            f"{escape(it.get('host') or url)}</a>{official}</p>") if url else ""
     nxt = f"<p class='next'>📅 {e('next_expected')}</p>" if is_past(it) and it.get("next_expected") else ""
+    contact = ""
+    if it.get("contact"):
+        ph = phone_of(it["contact"])
+        call = (f" <a class='call' href='tel:{ph[1]}'>📞 전화 걸기</a>") if ph else ""
+        contact = f"<p><b>문의처:</b> {e('contact')}{call}</p>"
     st.markdown(
         f"""<div class='card'>{dday}<div class='body'>
 <span class='badge {badge.get(verdict, "check")}'>{escape(verdict)}</span>
@@ -596,6 +686,7 @@ def render_card(it):
 <p><b>받을 수 있는 사람:</b> {e('eligibility')}</p>
 <p><b>판단 이유:</b> {e('reason')}</p>
 <p><b>주관 기관:</b> {e('agency')}</p>
+{contact}
 {src}</div></div>""",
         unsafe_allow_html=True,
     )
@@ -637,9 +728,43 @@ if items:
                            file_name="지원사업_일정.ics", mime="text/calendar", key="ics_all")
         st.caption("내려받은 파일을 열면 휴대폰·PC 달력에 들어가요. 마감 3일 전에 알림이 와요.")
 
-    step(3, "신청서 초안 만들기")
-    ordered = [it for it in items if not is_past(it)] + [it for it in items if is_past(it)]
-    names = [it.get("name", "") for it in ordered if it.get("verdict") != "해당 없음"]
+    step(3, "이번 주부터 할 일")
+    st.write("신청할 사업을 고르면, 마감일과 서류를 보고 날짜별 할 일을 짜 드려요.")
+    candidates = [it for it in ordered_items(items) if it.get("verdict") != "해당 없음"]
+    cand_names = [it.get("name", "") for it in candidates]
+    default = [it.get("name", "") for it in candidates if not is_past(it)][:3] or cand_names[:1]
+    picked = st.multiselect("신청할 사업 (여러 개 고를 수 있어요)", cand_names, default=default)
+    if st.button("할 일 목록 만들기", type="primary", disabled=not picked):
+        chosen = [it for it in candidates if it.get("name") in picked]
+        with st.spinner("마감일과 서류를 보고 할 일을 짜고 있어요..."):
+            try:
+                st.session_state.plan = make_plan(st.session_state.profile, chosen)
+            except Exception as err:
+                st.session_state.plan = None
+                st.error(f"할 일 목록을 만들다 문제가 생겼어요. 다시 눌러 주세요. ({err})")
+    plan = st.session_state.get("plan")
+    if plan:
+        groups = [("이번 주", 0, 6), ("다음 주", 7, 13), ("그 뒤", 14, 10_000)]
+        done_n = 0
+        with st.container(border=True):
+            for title, lo, hi in groups:
+                rows = [t for t in plan if lo <= (dt.date.fromisoformat(t["date"]) - TODAY).days <= hi]
+                if not rows:
+                    continue
+                a = TODAY + dt.timedelta(days=lo)
+                rng = f" ({a.month}/{a.day}~{(a + dt.timedelta(days=6)).month}/{(a + dt.timedelta(days=6)).day})" if hi < 10_000 else ""
+                st.markdown(f"**{title}{rng}**")
+                for j, t in enumerate(rows):
+                    d = dt.date.fromisoformat(t["date"])
+                    label = f"{d.month}/{d.day}({'월화수목금토일'[d.weekday()]})  [{t.get('kind') or '할 일'}] {t['task']}"
+                    done_n += st.checkbox(label, key=f"task_{t['date']}_{abs(hash(t['task']))}",
+                                          help=f"사업: {t.get('program') or ''}")
+            st.progress(done_n / len(plan), text=f"{done_n}/{len(plan)} 완료")
+        st.download_button(f"📅 할 일 {len(plan)}개 달력에 넣기", tasks_ics(plan).encode("utf-8"),
+                           file_name="지원사업_할일.ics", mime="text/calendar", key="ics_tasks")
+
+    step(4, "신청서 초안 만들기")
+    names = [it.get("name", "") for it in ordered_items(items) if it.get("verdict") != "해당 없음"]
     if names:
         pick = st.selectbox("어떤 사업의 신청서를 쓸까요?", names)
         if st.button("신청서 초안 만들기", type="primary"):
