@@ -33,7 +33,9 @@ def get_api_key():
 
 
 API_KEY = get_api_key()
-TODAY = dt.date.today()
+# 서버가 UTC여도 한국 날짜 기준으로 계산 (한국은 서머타임이 없어 고정 UTC+9; Windows에서 tzdata 없이도 동작)
+KST = dt.timezone(dt.timedelta(hours=9))
+TODAY = dt.datetime.now(KST).date()
 
 st.set_page_config(page_title=f"{APP_NAME} · 지원사업 찾기", page_icon="📮", layout="centered")
 
@@ -757,7 +759,9 @@ if items:
                 for j, t in enumerate(rows):
                     d = dt.date.fromisoformat(t["date"])
                     label = f"{d.month}/{d.day}({'월화수목금토일'[d.weekday()]})  [{t.get('kind') or '할 일'}] {t['task']}"
-                    done_n += st.checkbox(label, key=f"task_{t['date']}_{abs(hash(t['task']))}",
+                    # 같은 날 같은 문장이 여러 사업에 나와도 겹치지 않게: 묶음·순번·사업명까지 key에 넣음
+                    key = f"task_{lo}_{j}_{t['date']}_{abs(hash((t.get('program') or '', t['task'])))}"
+                    done_n += st.checkbox(label, key=key,
                                           help=f"사업: {t.get('program') or ''}")
             st.progress(done_n / len(plan), text=f"{done_n}/{len(plan)} 완료")
         st.download_button(f"📅 할 일 {len(plan)}개 달력에 넣기", tasks_ics(plan).encode("utf-8"),
