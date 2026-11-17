@@ -118,6 +118,18 @@ h3 { font-size: 1.3rem !important; }
 # ---------- Liner 호출 함수 ----------
 @st.cache_data(persist="disk", show_spinner=False)
 def llm(prompt, system="", max_tokens=2500):
+    """글로 답을 받는 호출 (신청서 초안용). 결과를 저장해 크레딧을 아낌"""
+    return _llm_raw(prompt, system, max_tokens)
+
+
+@st.cache_data(persist="disk", show_spinner=False)
+def llm_json(prompt, system="", max_tokens=2500):
+    """JSON으로 답을 받는 호출. JSON 정리까지 성공한 답만 저장된다.
+    (깨진 답은 오류가 나서 저장되지 않으므로, '다시 눌러 주세요' 하면 새로 물어봄)"""
+    return parse_json(_llm_raw(prompt, system, max_tokens))
+
+
+def _llm_raw(prompt, system="", max_tokens=2500):
     # openai 패키지 없이 Liner Model API(Chat Completions)를 직접 호출
     messages = []
     if system:
@@ -288,7 +300,7 @@ JSON 문자열 배열로만 답하세요.
 
 상황: {profile}"""
     try:
-        queries = parse_json(llm(prompt, max_tokens=500))
+        queries = llm_json(prompt, max_tokens=500)
         return [q for q in queries if isinstance(q, str)][:5]
     except Exception:
         return [f"{short} 지원사업 {TODAY.year}", f"{short} 보조금 공고"]
@@ -333,7 +345,7 @@ verdict는 '자격'만 봅니다(마감 여부와 상관없이): 지역·업종�
 
 검색 결과:
 {listing}"""
-    items = parse_json(llm(prompt, system=system, max_tokens=8000))
+    items = llm_json(prompt, system=system, max_tokens=8000)
     items = [it for it in items if isinstance(it, dict)]
     for it in items:
         idx = it.get("index")
@@ -426,7 +438,7 @@ def make_plan(profile, chosen):
 
 JSON 배열로만 답하세요. 각 항목:
 {{"date": "YYYY-MM-DD", "program": "사업 이름", "kind": "전화" 또는 "서류" 또는 "작성" 또는 "접수" 또는 "확인", "task": "할 일 한 문장"}}"""
-    tasks = parse_json(llm(prompt, system=system, max_tokens=3000))
+    tasks = llm_json(prompt, system=system, max_tokens=3000)
     out = []
     for t in tasks:
         if not isinstance(t, dict) or not t.get("task"):
