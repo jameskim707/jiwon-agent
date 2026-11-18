@@ -494,9 +494,10 @@ def apply_example(key):
     st.session_state.draft = None
 
 
-ex_col1, ex_col2, ex_col3 = st.columns(3)
-if ex_col1.button("예시로 채우기 (통영 피조개 양식)"):
+# 첫 버튼은 예전 모양 그대로(글이 잘리지 않게 한 줄에 혼자), 나머지 두 개는 아래 줄에 나란히
+if st.button("예시로 채우기 (통영 피조개 양식)"):
     apply_example("피조개")
+ex_col2, ex_col3, _ = st.columns([1, 1.45, 0.55])
 if ex_col2.button("예시: 귀농 준비"):
     apply_example("귀농")
 if ex_col3.button("예시: 제조업 퇴직·재취업"):
