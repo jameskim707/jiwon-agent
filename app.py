@@ -108,6 +108,7 @@ input, textarea { font-size: 1.1rem !important; }
   font-size: 1.15rem !important; font-weight: 700; padding: 0.7rem 1.4rem;
   background: #0E5E6F; color: #FFFFFF; border: none; border-radius: 10px;
 }
+.st-key-examples .stButton > button { padding: 0.6rem 0.3rem; font-size: 1.05rem !important; width: 100%; }
 .stButton > button:hover { background: #0A4855; color: #FFFFFF; }
 .stButton > button:focus-visible { outline: 3px solid #F2B705; outline-offset: 2px; }
 .card {
@@ -468,7 +469,7 @@ def draft_application(profile, item):
 
 
 # ---------- 화면 ----------
-st.title("내가 받을 수 있는 지원사업 찾기")
+st.title("📮 내가 받을 수 있는 지원사업 찾기")
 st.write("지역, 하는 일, 나이를 적으면 받을 수 있는 지원사업을 찾아 마감일 순서로 보여 드려요.")
 
 if not API_KEY:
@@ -494,14 +495,20 @@ def apply_example(key):
     st.session_state.draft = None
 
 
-# 첫 버튼은 예전 모양 그대로(글이 잘리지 않게 한 줄에 혼자), 나머지 두 개는 아래 줄에 나란히
-if st.button("예시로 채우기 (통영 피조개 양식)"):
-    apply_example("피조개")
-ex_col2, ex_col3, _ = st.columns([1, 1.45, 0.55])
-if ex_col2.button("예시: 귀농 준비"):
-    apply_example("귀농")
-if ex_col3.button("예시: 제조업 퇴직·재취업"):
-    apply_example("재취업")
+# 예시 버튼 3개: 같은 크기로 한 줄에 반듯하게 (글은 짧게 해서 잘리지 않게)
+try:
+    ex_box = st.container(key="examples")   # 이 칸의 버튼만 모양을 따로 잡기 위한 이름표
+except TypeError:                             # 옛 스트림릿에는 이름표 기능이 없음
+    ex_box = st.container()
+with ex_box:
+    st.caption("예시로 먼저 해 보기 · 모두 가상 인물이에요")
+    ex_cols = st.columns(3)
+    if ex_cols[0].button("🐚 피조개 양식", use_container_width=True):
+        apply_example("피조개")
+    if ex_cols[1].button("🌾 귀농 준비", use_container_width=True):
+        apply_example("귀농")
+    if ex_cols[2].button("🏭 제조업 재취업", use_container_width=True):
+        apply_example("재취업")
 ex = st.session_state.example
 
 region = st.text_input("사는 곳 (시·군까지)", value=ex.get("region", ""), placeholder="예: 경남 통영시")
@@ -580,6 +587,9 @@ items = st.session_state.get("items")
 badge = {"가능": "ok", "확인 필요": "check", "해당 없음": "no"}
 
 
+verdict_icon = {"가능": "✅", "확인 필요": "❓", "해당 없음": "⛔"}
+
+
 def render_card(it):
     verdict = it.get("verdict", "확인 필요")
     e = lambda k: escape(str(it.get(k) or ""))
@@ -607,7 +617,7 @@ def render_card(it):
         docs_html = "<p><b>준비할 서류:</b> 원문에서 찾지 못했어요. 공고 원문과 첨부 파일에서 꼭 확인해 주세요.</p>"
     st.markdown(
         f"""<div class='card'>{dday}<div class='body'>
-<span class='badge {badge.get(verdict, "check")}'>{escape(verdict)}</span>
+<span class='badge {badge.get(verdict, "check")}'>{verdict_icon.get(verdict, "❓")} {escape(verdict)}</span>
 <h3>{e('name')}</h3>
 {nxt}
 <p>{e('summary')}</p>
@@ -626,15 +636,15 @@ if items:
     open_items = [it for it in visible if not is_past(it)]
     past_items = [it for it in visible if is_past(it)]
 
-    st.subheader(f"지금 신청할 수 있는 사업 ({len(open_items)})")
+    st.subheader(f"📌 지금 신청할 수 있는 사업 ({len(open_items)})")
     cal_items = calendar_items(open_items)
     if cal_items:
-        st.download_button(f"마감일을 달력에 넣기 (.ics) · {len(cal_items)}개", build_ics(cal_items),
+        st.download_button(f"📅 마감일을 달력에 넣기 (.ics) · {len(cal_items)}개", build_ics(cal_items),
                            file_name="지원사업_마감일.ics", mime="text/calendar")
         st.caption("내려받은 파일을 열면 달력에 마감일이 들어가고, 마감 3일 전·하루 전·당일 오전 9시에 알림이 울리도록 해 두었어요. 알림이 실제로 울리는지는 쓰는 달력 앱에 따라 달라요.")
     kakao_text = kakao_summary(open_items)
     if kakao_text:
-        with st.expander("카톡으로 보낼 요약 (복사해서 붙여 넣기)"):
+        with st.expander("💬 카톡으로 보낼 요약 (복사해서 붙여 넣기)"):
             st.caption("아래 상자 오른쪽 위의 복사 버튼을 누른 뒤, 카카오톡 '나와의 채팅'이나 가족 채팅방에 붙여 넣으세요. 앱이 카톡으로 직접 보내는 것은 아니에요.")
             try:
                 st.code(kakao_text, language=None, wrap_lines=True)
@@ -646,13 +656,13 @@ if items:
         render_card(it)
 
     if past_items:
-        st.subheader(f"지난 공고 · 다시 나올 때 미리 준비하세요 ({len(past_items)})")
+        st.subheader(f"🗓️ 지난 공고 · 다시 나올 때 미리 준비하세요 ({len(past_items)})")
         st.caption("이런 지원사업은 해마다 비슷한 시기에 다시 공고되는 경우가 많아요.")
         for it in past_items:
             render_card(it)
     st.caption("최종 자격과 마감일은 반드시 공고 원문에서 확인하세요.")
 
-    st.subheader("신청서 초안 만들기")
+    st.subheader("📝 신청서 초안 만들기")
     names = [it.get("name", "") for it in items if it.get("verdict") != "해당 없음"]
     if names:
         pick = st.selectbox("어떤 사업의 신청서를 쓸까요?", names)
@@ -671,4 +681,4 @@ if items:
                     st.session_state.draft = head + body_text
         if st.session_state.get("draft"):
             st.markdown(st.session_state.draft)
-            st.download_button("초안 내려받기 (.txt)", st.session_state.draft, file_name="신청서_초안.txt")
+            st.download_button("📥 초안 내려받기 (.txt)", st.session_state.draft, file_name="신청서_초안.txt")
