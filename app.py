@@ -424,6 +424,32 @@ def build_ics(items):
     return "\r\n".join(_ics_fold(l) for l in lines) + "\r\n"
 
 
+def kakao_summary(items, limit=5):
+    """카카오톡에 붙여 넣을 짧은 요약 글. 마감 전이고 '해당 없음'이 아닌 사업을 최대 limit개."""
+    one = lambda v: re.sub(r"\s+", " ", str(v or "")).strip()
+    pick = [it for it in items if not is_past(it) and it.get("verdict") != "해당 없음"][:limit]
+    if not pick:
+        return ""
+    out = [f"[지원사업 알림] {TODAY.isoformat()} 기준", ""]
+    for n, it in enumerate(pick, 1):
+        d = days_left(it.get("deadline") or "")
+        when = f"D-{d}, {it['deadline']} 마감" if d is not None and d >= 0 else "마감일은 원문에서 확인"
+        docs = ", ".join(it.get("documents") or []) or "원문에서 찾지 못했어요. 공고 원문에서 확인"
+        url = str(it.get("url", ""))
+        out += [f"{n}) {one(it.get('name')) or '지원사업'} [{one(it.get('verdict')) or '확인 필요'}]",
+                f"· {when}",
+                f"· 받을 수 있는 사람: {one(it.get('eligibility')) or '원문에서 확인'}",
+                f"· 준비할 서류: {docs}"]
+        if url.startswith(("http://", "https://")):
+            out.append(f"· 공고: {url}")
+        out.append("")
+    more = len([it for it in items if not is_past(it) and it.get("verdict") != "해당 없음"]) - len(pick)
+    if more > 0:
+        out.append(f"(그 밖에 {more}개 사업이 더 있어요)")
+    out.append("※ 최종 자격과 마감일은 공고 원문에서 꼭 확인하세요.")
+    return "\n".join(out)
+
+
 def draft_application(profile, item):
     prompt = f"""아래 지원사업의 신청서 초안을 써 주세요.
 
@@ -605,6 +631,14 @@ if items:
         st.download_button(f"마감일을 달력에 넣기 (.ics) · {len(cal_items)}개", build_ics(cal_items),
                            file_name="지원사업_마감일.ics", mime="text/calendar")
         st.caption("내려받은 파일을 열면 달력에 마감일이 들어가고, 마감 3일 전·하루 전·당일 오전 9시에 알림이 울리도록 해 두었어요. 알림이 실제로 울리는지는 쓰는 달력 앱에 따라 달라요.")
+    kakao_text = kakao_summary(open_items)
+    if kakao_text:
+        with st.expander("카톡으로 보낼 요약 (복사해서 붙여 넣기)"):
+            st.caption("아래 상자 오른쪽 위의 복사 버튼을 누른 뒤, 카카오톡 '나와의 채팅'이나 가족 채팅방에 붙여 넣으세요. 앱이 카톡으로 직접 보내는 것은 아니에요.")
+            try:
+                st.code(kakao_text, language=None, wrap_lines=True)
+            except TypeError:  # 옛 스트림릿에는 줄바꿈 옵션이 없음
+                st.code(kakao_text, language=None)
     if not open_items:
         st.write("지금 모집 중인 공고는 찾지 못했어요. 아래 지난 공고를 보고 다음 모집을 미리 준비해 보세요.")
     for it in open_items:
