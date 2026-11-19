@@ -13,6 +13,7 @@ import threading
 import hashlib
 from html import escape
 from html.parser import HTMLParser
+from urllib.parse import urljoin
 from concurrent.futures import ThreadPoolExecutor
 
 import requests
@@ -282,19 +283,72 @@ class _TextGrab(HTMLParser):
             self.parts.append(data.strip())
 
 
-def fetch_page_text(url, limit=3200):
-    """공고 페이지를 열어 마감일·자격이 적힌 부분 위주로 글자를 뽑는다. 실패하면 빈 문자열."""
+class _LinkGrab(HTMLParser):
+    """페이지의 링크(주소와 글자)를 모은다"""
+    def __init__(self):
+        super().__init__()
+        self.links, self._href, self._text = [], None, []
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "a":
+            self._href, self._text = dict(attrs).get("href"), []
+
+    def handle_data(self, data):
+        if self._href is not None:
+            self._text.append(data)
+
+    def handle_endtag(self, tag):
+        if tag == "a" and self._href is not None:
+            self.links.append((self._href, re.sub(r"\s+", " ", "".join(self._text)).strip()))
+            self._href = None
+
+
+FORM_EXT = (".hwp", ".hwpx", ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".zip")
+FORM_WORDS = ("신청서", "양식", "서식", "별지", "계획서")
+SKIP_WORDS = ("개인정보", "이용약관", "로그인", "회원가입", "저작권")
+
+
+def extract_forms(html, base_url, limit=6):
+    """공고 페이지에서 신청서·양식·첨부 파일로 보이는 링크를 찾는다. 양식 링크를 먼저, 최대 limit개."""
+    g = _LinkGrab()
+    try:
+        g.feed(html)
+    except Exception:
+        return []
+    seen, forms, others = set(), [], []
+    for href, text in g.links:
+        href = (href or "").strip()
+        if not href or href.startswith(("javascript:", "#", "mailto:", "tel:")):
+            continue
+        url = urljoin(base_url, href)
+        if not url.startswith(("http://", "https://")) or url in seen:
+            continue
+        if any(w in text for w in SKIP_WORDS):
+            continue
+        is_form = any(w in text for w in FORM_WORDS)
+        has_ext = any(ext in (href + " " + text).lower() for ext in FORM_EXT)
+        if not (is_form or has_ext):
+            continue
+        seen.add(url)
+        item = {"text": (text or url.rsplit("/", 1)[-1] or "첨부 파일")[:60], "url": url}
+        (forms if is_form else others).append(item)
+    return (forms + others)[:limit]
+
+
+def fetch_page(url, limit=3200):
+    """공고 페이지를 열어 (마감일·자격이 적힌 부분 위주의 글자, 양식·첨부 파일 링크 목록)을 돌려준다. 실패하면 ("", [])."""
     try:
         r = requests.get(url, timeout=8, headers={"User-Agent": "Mozilla/5.0"})
         if "html" not in r.headers.get("Content-Type", "html"):
-            return ""
+            return "", []
         if not r.encoding or r.encoding.lower() == "iso-8859-1":
             r.encoding = r.apparent_encoding
         g = _TextGrab()
         g.feed(r.text)
         text = re.sub(r"\s+", " ", " ".join(g.parts))
+        forms = extract_forms(r.text, url)
     except Exception:
-        return ""
+        return "", []
     spans = []
     for kw in KEYWORDS:
         for m in re.finditer(re.escape(kw), text):
@@ -308,16 +362,16 @@ def fetch_page_text(url, limit=3200):
             merged.append((a, b))
     picked = " … ".join(text[a:b] for a, b in merged)
     out = (text[:500] + " … " + picked) if picked else text[:1500]
-    return out[:limit]
+    return out[:limit], forms
 
 
 def read_pages(results, n=12):
     targets = results[:n]
     with ThreadPoolExecutor(max_workers=6) as ex:
-        texts = list(ex.map(lambda r: fetch_page_text(r.get("url", "")), targets))
-    for r, t in zip(targets, texts):
-        r["page_text"] = t
-    return sum(1 for t in texts if t)
+        pages = list(ex.map(lambda r: fetch_page(r.get("url", "")), targets))
+    for r, (t, forms) in zip(targets, pages):
+        r["page_text"], r["forms"] = t, forms
+    return sum(1 for t, _ in pages if t)
 
 
 # ---------- 에이전트 단계 ----------
@@ -389,6 +443,8 @@ verdict는 '자격'만 봅니다(마감 여부와 상관없이): 지역·업종�
         if isinstance(idx, int) and 0 <= idx < len(results):
             it["url"] = results[idx].get("url", "")
             it["host"] = results[idx].get("hostname", "")
+            it["forms"] = results[idx].get("forms") or []
+            it["page_text"] = (results[idx].get("page_text") or "")[:2500]
     return items, partial, diag
 
 
@@ -517,17 +573,25 @@ def kakao_summary(items, limit=5):
 
 
 def draft_application(profile, item):
-    prompt = f"""아래 지원사업의 신청서 초안을 써 주세요.
+    docs = ", ".join(item.get("documents") or []) or "원문에서 찾지 못함"
+    forms = ", ".join(f["text"] for f in (item.get("forms") or [])[:4]) or "찾지 못함"
+    page = item.get("page_text") or "(공고 원문을 읽지 못함)"
+    prompt = f"""아래 지원사업에 신청하려는 사람이 공식 신청서(사업계획서)에 옮겨 적을 내용을 항목별로 준비해 주세요.
 
 신청자 상황: {profile}
 사업 이름: {item.get('name')}
 주관 기관: {item.get('agency')}
 지원 내용: {item.get('summary')}
 자격: {item.get('eligibility')}
+공고에서 찾은 제출서류: {docs}
+공고 페이지에서 찾은 양식 파일: {forms}
+공고 원문 발췌: {page}
 
 규칙:
+- 기관마다 지정된 신청 양식이 따로 있습니다. 이 글은 양식 자체가 아니라 양식 칸에 옮겨 적을 내용입니다. 맨 윗줄 제목은 '(사업 이름) 신청서에 옮겨 적을 내용'으로 쓰세요.
+- '공고 원문 발췌'에 신청서·사업계획서에 쓸 항목 이름(예: 사업 개요, 추진 계획, 소요 예산)이 적혀 있으면 그 이름 그대로 소제목을 쓰세요. 원문에 없는 항목을 지어내지 마세요.
+- 원문에서 항목을 찾지 못했으면 일반 항목(신청 동기, 현재 사업 현황, 지원금 사용 계획, 기대 효과)으로 쓰고, 제목 아래에 '이 공고에서 서식 항목을 찾지 못해 일반 항목으로 썼어요. 공식 양식의 칸에 맞춰 옮겨 적으세요.'를 한 줄 넣으세요.
 - 이름, 주민등록번호, 연락처, 주소, 사업자번호 같은 개인정보는 절대 채우지 말고 [이름], [연락처]처럼 빈칸으로 두세요.
-- 실제 공고 양식을 모르므로 일반적인 항목(신청 동기, 현재 사업 현황, 지원금 사용 계획, 기대 효과)으로 구성하세요.
 - 신청자가 고쳐 쓰기 쉽게 쉬운 말로, 각 항목 3~5문장.
 - 맨 끝에 "제출 전 공고 원문의 서식과 필요 서류를 꼭 확인하세요."를 넣으세요."""
     return llm(prompt, max_tokens=2500)
@@ -690,6 +754,12 @@ def render_card(it):
                      + "".join(f"<li>{escape(x)}</li>" for x in docs) + "</ul>")
     else:
         docs_html = "<p><b>준비할 서류:</b> 원문에서 찾지 못했어요. 공고 원문과 첨부 파일에서 꼭 확인해 주세요.</p>"
+    forms = it.get("forms") or []
+    forms_html = ""
+    if forms:
+        forms_html = ("<p><b>공식 신청서·첨부 파일</b> (공고 페이지에서 찾은 링크)</p><ul class='docs'>"
+                      + "".join(f"<li><a href='{escape(f['url'])}' target='_blank' rel='noopener noreferrer'>{escape(f['text'])}</a></li>" for f in forms)
+                      + "</ul>")
     st.markdown(
         f"""<div class='card'>{dday}<div class='body'>
 <span class='badge {badge.get(verdict, "check")}'>{verdict_icon.get(verdict, "❓")} {escape(verdict)}</span>
@@ -700,6 +770,7 @@ def render_card(it):
 <p><b>판단 이유:</b> {e('reason')}</p>
 <p><b>주관 기관:</b> {e('agency')}</p>
 {docs_html}
+{forms_html}
 {src}</div></div>""",
         unsafe_allow_html=True,
     )
@@ -738,6 +809,7 @@ if items:
     st.caption("최종 자격과 마감일은 반드시 공고 원문에서 확인하세요.")
 
     st.subheader("📝 신청서 초안 만들기")
+    st.caption("기관마다 지정된 신청 양식이 달라요. 이 글은 양식이 아니라, 공식 양식의 칸에 옮겨 적을 내용이에요. 공고 페이지에서 양식 파일을 찾으면 카드에 링크가 나와요. 한글·PDF 같은 파일 안의 항목은 앱이 읽지 못해요.")
     names = [it.get("name", "") for it in items if it.get("verdict") != "해당 없음"]
     if names:
         pick = st.selectbox("어떤 사업의 신청서를 쓸까요?", names)
@@ -753,6 +825,9 @@ if items:
                     docs = chosen.get("documents") or []
                     head = ("## 준비할 서류 (공고 원문 기준)\n" + "\n".join(f"- ☐ {x}" for x in docs) + "\n\n") if docs else \
                            "## 준비할 서류\n- 원문에서 찾지 못했어요. 공고 원문과 첨부 파일에서 꼭 확인해 주세요.\n\n"
+                    fl = chosen.get("forms") or []
+                    if fl:
+                        head += "## 공식 신청서·첨부 파일 (공고 페이지에서 찾은 링크)\n" + "\n".join(f"- {f['text']}: {f['url']}" for f in fl[:4]) + "\n\n"
                     st.session_state.draft = head + body_text
         if st.session_state.get("draft"):
             st.markdown(st.session_state.draft)
