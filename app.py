@@ -137,22 +137,35 @@ input, textarea { font-size: 1.1rem !important; }
 )
 
 # ---------- Liner 호출 함수 ----------
-def llm(prompt, system="", max_tokens=2500):
+def llm(prompt, system="", max_tokens=2500, info=None):
     # openai 패키지 없이 Liner Model API(Chat Completions)를 직접 호출
     messages = []
     if system:
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
-    r = requests.post(
-        CHAT_URL,
-        headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
-        json={"model": MODEL, "messages": messages, "max_tokens": max_tokens},
-        timeout=120,
-    )
-    if r.status_code == 402:
-        raise RuntimeError("크레딧이 부족해요 (402). Liner 플랫폼에서 잔여 크레딧을 확인해 주세요.")
-    r.raise_for_status()
-    return r.json()["choices"][0]["message"]["content"] or ""
+    for attempt in range(2):
+        try:
+            r = requests.post(
+                CHAT_URL,
+                headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
+                json={"model": MODEL, "messages": messages, "max_tokens": max_tokens},
+                timeout=120,
+            )
+        except (requests.Timeout, requests.ConnectionError):
+            if attempt == 0:  # 잠깐 끊겼거나 느렸으면 한 번 더
+                time.sleep(2)
+                continue
+            raise
+        if r.status_code == 402:
+            raise RuntimeError("크레딧이 부족해요 (402). Liner 플랫폼에서 잔여 크레딧을 확인해 주세요.")
+        if r.status_code in (429, 500, 502, 503, 504) and attempt == 0:  # 사람이 몰렸거나 서버가 잠깐 바쁨
+            time.sleep(3)
+            continue
+        r.raise_for_status()
+        choice = r.json()["choices"][0]
+        if info is not None:  # 진단용: 답이 끝맺음으로 끝났는지, 길이 제한으로 잘렸는지(length)
+            info["finish"] = choice.get("finish_reason")
+        return choice["message"]["content"] or ""
 
 
 def parse_json(text):
@@ -160,6 +173,41 @@ def parse_json(text):
     text = text.replace("```json", "").replace("```", "").strip()
     match = re.search(r"(\[.*\]|\{.*\})", text, re.S)
     return json.loads(match.group(1) if match else text)
+
+
+def parse_items(text):
+    """모델 답에서 사업 목록을 꺼낸다. 답이 끊기거나 일부 항목의 형식이 깨져도, 읽을 수 있는 항목은 살린다.
+    (목록, 일부만 읽었는지) 를 돌려준다. 하나도 못 읽으면 ValueError."""
+    t = text.replace("```json", "").replace("```", "").strip()
+    data = None
+    try:
+        data = json.loads(t)
+    except ValueError:
+        m = re.search(r"(\[.*\]|\{.*\})", t, re.S)
+        if m:
+            try:
+                data = json.loads(m.group(1))
+            except ValueError:
+                data = None
+    if isinstance(data, dict):  # {"items": [...]} 처럼 감싸 준 경우
+        data = next((v for v in data.values() if isinstance(v, list)), None)
+    if isinstance(data, list):
+        return [x for x in data if isinstance(x, dict) and "name" in x], False  # 사업 이름이 있는 항목만
+    # 통째로 읽을 수 없으면 항목을 하나씩 읽는다. 깨진 항목(따옴표 오류, 끊김 등)은 건너뛰고 나머지를 살린다.
+    dec, pos, out = json.JSONDecoder(), 0, []
+    for m in re.finditer(r"(?:^|[\[,])\s*(\{)", t, re.M):
+        i = m.start(1)
+        if i < pos:
+            continue
+        try:
+            obj, pos = dec.raw_decode(t, i)
+        except ValueError:
+            continue
+        if isinstance(obj, dict) and "name" in obj:
+            out.append(obj)
+    if not out:
+        raise ValueError("모델 답을 읽지 못했어요")
+    return out, True
 
 
 def liner_search(query, max_results=8, recent=True):
@@ -287,7 +335,7 @@ JSON 문자열 배열로만 답하세요.
         return [f"{short} 지원사업 {TODAY.year}", f"{short} 보조금 공고"]
 
 
-def judge(profile, results):
+def _judge_call(profile, results):
     listing = "\n".join(
         f"[{i}] 제목: {r.get('title','')}\n    날짜: {r.get('date','')}\n    URL: {r.get('url','')}"
         f"{'  (공식 사이트)' if is_official(r.get('url','')) else ''}\n    요약: {r.get('description','')}"
@@ -319,20 +367,37 @@ def judge(profile, results):
  "documents": ["'원문 발췌'에 실제로 적힌 필수 제출 서류 이름들. 짧게 (예: '사업자등록증 사본'). 원문에 없으면 빈 배열 []"]
 }}
 
+항목은 신청자에게 가장 관련 있는 것부터 최대 10개까지만 쓰세요.
+summary와 reason, eligibility는 각각 한 문장으로 60자 안팎으로 짧게 쓰고, documents는 최대 5개까지만 쓰세요.
+글 안에서 따옴표가 필요하면 큰따옴표(")가 아니라 작은따옴표(')를 쓰세요. 큰따옴표를 쓰면 JSON이 깨집니다.
 status: 오늘 날짜와 마감일을 비교해 정하세요. 마감일이 지났으면 "지난 공고".
 documents는 '원문 발췌'에 글자로 적힌 서류만 쓰세요. 일반적으로 필요할 것 같은 서류를 추측해서 채우지 마세요. 첨부 파일 안에만 있어서 읽지 못한 서류는 적지 마세요.
 verdict는 '자격'만 봅니다(마감 여부와 상관없이): 지역·업종·나이 조건이 분명히 맞으면 "가능", 정보가 부족하면 "확인 필요", 조건이 분명히 안 맞으면 "해당 없음".
 
 검색 결과:
 {listing}"""
-    items = parse_json(llm(prompt, system=system, max_tokens=4500))
+    info = {}
+    text = llm(prompt, system=system, max_tokens=4500, info=info)
+    try:
+        items, partial = parse_items(text)
+    except ValueError as e:
+        raise ValueError(f"{e} (AI 답 {len(text)}글자, 끝맺음: {info.get('finish')})")
+    diag = f"진단: AI 답 {len(text)}글자, 끝맺음 {info.get('finish')}, 읽은 항목 {len(items)}개"
     for it in items:
         it["documents"] = clean_docs(it.get("documents"))
         idx = it.get("index")
         if isinstance(idx, int) and 0 <= idx < len(results):
             it["url"] = results[idx].get("url", "")
             it["host"] = results[idx].get("hostname", "")
-    return items
+    return items, partial, diag
+
+
+def judge(profile, results):
+    """(사업 목록, 일부만 정리됐는지, 진단 글). 답을 못 읽으면 결과를 12개로 줄여 한 번 더 시도한다."""
+    try:
+        return _judge_call(profile, results)
+    except ValueError:  # 답이 형식에 안 맞거나 너무 길어 끊긴 경우 (크레딧 부족·접속 오류는 여기서 다시 시도하지 않음)
+        return _judge_call(profile, results[:12])
 
 
 def clean_docs(v):
@@ -493,6 +558,7 @@ def apply_example(key):
     st.session_state.example = EXAMPLES[key]
     st.session_state.items = None
     st.session_state.draft = None
+    st.session_state.partial = False
 
 
 # 예시 버튼 3개: 같은 크기로 한 줄에 반듯하게 (글은 짧게 해서 잘리지 않게)
@@ -575,15 +641,24 @@ if run_search:
         n_read = read_pages(results)
         st.write(f"원문 {n_read}개를 읽었어요. 자격과 마감일을 확인하고 있어요...")
         try:
-            items = judge(profile, results)
+            items, partial, diag = judge(profile, results)
         except Exception as e:
             status.update(label="정리하다 문제가 생겼어요. 다시 눌러 주세요.", state="error")
-            st.write(str(e))
+            if isinstance(e, RuntimeError):
+                st.write(str(e))  # 크레딧 부족처럼 사람이 읽을 수 있는 안내
+            else:
+                st.write("지금 쓰는 사람이 많거나 AI의 답이 길어서 생긴 문제일 수 있어요. 잠시 뒤 한 번 더 눌러 주세요.")
+                st.caption(f"(오류: {e})")
             st.stop()
+        st.session_state.partial = partial
+        st.session_state.diag = diag
         st.session_state.items = sort_items(items)
         status.update(label=f"지원사업 {len(items)}개를 찾았어요", state="complete", expanded=False)
 
 items = st.session_state.get("items")
+if items and st.session_state.get("partial"):
+    st.info("AI가 일부 사업은 정리하지 못했어요. 한 번 더 누르면 더 나올 수 있어요.")
+    st.caption(st.session_state.get("diag", ""))
 badge = {"가능": "ok", "확인 필요": "check", "해당 없음": "no"}
 
 
