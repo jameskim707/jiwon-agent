@@ -597,6 +597,25 @@ def draft_application(profile, item):
     return llm(prompt, max_tokens=2500)
 
 
+# ---------- 검색 중 달리기 그림 ----------
+RUNNER_HTML = """
+<style>
+.runner-track { position: relative; height: 3.4rem; overflow: hidden; margin: 0.2rem 0 0.6rem 0;
+  border-bottom: 3px dashed #0E5E6F55; }
+.runner { position: absolute; bottom: 0.1rem; left: -4rem; font-size: 2.3rem; line-height: 1;
+  animation: run-across 2.2s linear infinite; white-space: nowrap; }
+.runner .me { display: inline-block; transform: scaleX(-1); animation: bob 0.3s ease-in-out infinite alternate; }
+.runner .dust { display: inline-block; font-size: 1.4rem; opacity: 0.7; margin-right: -0.3rem; }
+.runner-msg { font-size: 0.95rem; font-weight: 700; color: #0E5E6F; margin: 0 0 0.3rem 0; }
+@keyframes run-across { from { left: -4rem; } to { left: 100%; } }
+@keyframes bob { from { transform: scaleX(-1) translateY(0); } to { transform: scaleX(-1) translateY(-5px); } }
+@media (prefers-reduced-motion: reduce) { .runner, .runner .me { animation: none; } .runner { left: 0.5rem; } }
+.queries { margin: 0 0 0.4rem 1.3rem; padding: 0; line-height: 1.7; }
+</style>
+<p class='runner-msg'>공고를 찾으러 달려가는 중이에요!</p>
+<div class='runner-track'><div class='runner'><span class='dust'>💨</span><span class='me'>🏃</span></div></div>
+"""
+
 # ---------- 화면 ----------
 st.title("📮 내가 받을 수 있는 지원사업 찾기")
 st.write("지역, 하는 일, 나이를 적으면 받을 수 있는 지원사업을 찾아 마감일 순서로 보여 드려요.")
@@ -662,12 +681,17 @@ if run_search:
     st.session_state.profile = profile
     st.session_state.draft = None
     with st.status("공고를 찾고 있어요...", expanded=True) as status:
+        # 검색하는 동안 트랙을 달리는 그림 (검색이 끝나 상자가 접히면 함께 사라짐)
+        st.markdown(RUNNER_HTML, unsafe_allow_html=True)
         queries = make_queries(profile, f"{region} {job}")
         # AI 검색어가 너무 길거나 좁을 때를 대비해 단순한 검색어도 항상 함께
         for q in (f"{region} {job} 지원사업 {TODAY.year}", f"{job} 소상공인 지원사업 공고"):
             if q not in queries:
                 queries.append(q)
-        st.write("검색어: " + " / ".join(queries))
+        # 검색어(기관 이름 포함)를 한 줄에 하나씩 보여 줌
+        st.markdown("<p style='margin:0.2rem 0'><b>검색어</b></p><ol class='queries'>"
+                    + "".join(f"<li>{escape(q)}</li>" for q in queries) + "</ol>",
+                    unsafe_allow_html=True)
         seen, results = set(), []
         for q in queries:
             try:
@@ -757,7 +781,10 @@ def render_card(it):
     forms = it.get("forms") or []
     forms_html = ""
     if forms:
-        forms_html = ("<p><b>공식 신청서·첨부 파일</b> (공고 페이지에서 찾은 링크)</p><ul class='docs'>"
+        # 공식 사이트(.go.kr 등)에서 찾은 링크만 '공식'이라고 부르고, 블로그 등에서 찾은 건 확인하라고 알림
+        forms_title = ("<p><b>공식 신청서·첨부 파일</b> (공고 페이지에서 찾은 링크)</p>" if url and is_official(url) else
+                       "<p><b>신청서·첨부 파일</b> (공식 사이트가 아닌 곳에서 찾은 링크예요. 내려받기 전에 기관 누리집에서 꼭 확인하세요)</p>")
+        forms_html = (forms_title + "<ul class='docs'>"
                       + "".join(f"<li><a href='{escape(f['url'])}' target='_blank' rel='noopener noreferrer'>{escape(f['text'])}</a></li>" for f in forms)
                       + "</ul>")
     st.markdown(
@@ -827,7 +854,9 @@ if items:
                            "## 준비할 서류\n- 원문에서 찾지 못했어요. 공고 원문과 첨부 파일에서 꼭 확인해 주세요.\n\n"
                     fl = chosen.get("forms") or []
                     if fl:
-                        head += "## 공식 신청서·첨부 파일 (공고 페이지에서 찾은 링크)\n" + "\n".join(f"- {f['text']}: {f['url']}" for f in fl[:4]) + "\n\n"
+                        fl_title = ("## 공식 신청서·첨부 파일 (공고 페이지에서 찾은 링크)\n" if is_official(chosen.get("url", "")) else
+                                    "## 신청서·첨부 파일 (공식 사이트가 아닌 곳에서 찾은 링크 · 기관 누리집에서 꼭 확인)\n")
+                        head += fl_title + "\n".join(f"- {f['text']}: {f['url']}" for f in fl[:4]) + "\n\n"
                     st.session_state.draft = head + body_text
         if st.session_state.get("draft"):
             st.markdown(st.session_state.draft)
