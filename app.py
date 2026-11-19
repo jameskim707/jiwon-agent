@@ -597,6 +597,47 @@ def draft_application(profile, item):
     return llm(prompt, max_tokens=2500)
 
 
+def has_official_form(item):
+    """공식 사이트(.go.kr 등)의 공고 페이지에서 신청서·양식 파일 링크를 찾았는지"""
+    return bool(item.get("forms")) and is_official(item.get("url", ""))
+
+
+def no_form_guide(item):
+    """공식 양식을 못 찾았을 때: 일반 초안 대신 양식 받는 곳과 준비 서류를 안내하는 글 (AI를 부르지 않음)"""
+    one = lambda v: re.sub(r"\s+", " ", str(v or "")).strip()
+    name = one(item.get("name")) or "이 사업"
+    agency = one(item.get("agency"))
+    url = str(item.get("url", ""))
+    out = [f"## {name} 신청 준비", "",
+           "이 사업은 공식 신청 양식을 공고 페이지에서 찾지 못해서 초안을 만들지 않았어요. "
+           "기관마다 정해진 양식이 따로 있어서, 아무 틀에 맞춘 초안은 실제 신청에 쓸 수 없어요.", "",
+           "### 공식 양식 받는 곳"]
+    if url.startswith(("http://", "https://")) and is_official(url):
+        out.append(f"1. **공고 원문 첨부파일**: {url}  \n   맨 아래 첨부파일 중 '신청서', '서식', '별지'라는 이름이 있는지 보세요. "
+                   "공고문 파일 뒤쪽에 양식이 붙어 있는 경우도 많아요.")
+    elif url.startswith(("http://", "https://")):
+        out.append(f"1. **기관의 공고 원문 찾기**: 찾은 글({url})은 공식 공고가 아닐 수 있어요. 기관 누리집에서 같은 공고를 찾아 "
+                   "첨부파일 중 '신청서', '서식', '별지'라는 이름이 있는지 보세요.")
+    else:
+        out.append("1. **공고 원문 첨부파일**: 맨 아래 첨부파일 중 '신청서', '서식', '별지'라는 이름이 있는지 보세요.")
+    if agency and agency != "확인 필요":
+        out.append(f"2. **주관 기관에 문의**: {agency} 누리집의 공지·공고 게시판이나 담당 부서에 양식을 받을 수 있는지 물어보세요.")
+    else:
+        out.append("2. **주관 기관에 문의**: 공고에 적힌 담당 부서에 양식을 받을 수 있는지 물어보세요.")
+    out += ["3. **정부24 (www.gov.kr)**: 민원 서비스에서 사업 이름이나 서식 이름으로 검색해 보세요. "
+            "지자체 자체 사업은 없을 수도 있어요.", ""]
+    docs = item.get("documents") or []
+    out.append("### 준비할 서류 (공고 원문 기준)")
+    out += [f"- ☐ {one(x)}" for x in docs] if docs else ["- 원문에서 찾지 못했어요. 공고 원문과 첨부파일에서 꼭 확인해 주세요."]
+    forms = item.get("forms") or []
+    if forms:  # 공식 사이트가 아닌 곳에서만 찾은 링크
+        out += ["", "### 참고: 공식 사이트가 아닌 곳에서 찾은 파일",
+                "블로그 등에서 찾은 링크라 최신 양식이 아닐 수 있어요. 내려받기 전에 기관 누리집에서 꼭 확인하세요."]
+        out += [f"- {one(f.get('text'))}: {f.get('url')}" for f in forms[:4]]
+    out += ["", "※ 최종 자격과 마감일, 필요 서류는 공고 원문에서 꼭 확인하세요."]
+    return "\n".join(out)
+
+
 # ---------- 검색 중 달리기 그림 ----------
 RUNNER_HTML = """
 <style>
@@ -836,13 +877,22 @@ if items:
     st.caption("최종 자격과 마감일은 반드시 공고 원문에서 확인하세요.")
 
     st.subheader("📝 신청서 초안 만들기")
-    st.caption("기관마다 지정된 신청 양식이 달라요. 이 글은 양식이 아니라, 공식 양식의 칸에 옮겨 적을 내용이에요. 공고 페이지에서 양식 파일을 찾으면 카드에 링크가 나와요. 한글·PDF 같은 파일 안의 항목은 앱이 읽지 못해요.")
+    st.caption("기관마다 지정된 신청 양식이 달라요. 공식 사이트에서 양식 파일을 찾은 사업만 초안을 써 드려요. "
+               "양식을 찾지 못한 사업은 양식 받는 곳과 준비 서류를 알려 드려요.")
     names = [it.get("name", "") for it in items if it.get("verdict") != "해당 없음"]
     if names:
         pick = st.selectbox("어떤 사업의 신청서를 쓸까요?", names)
         if st.button("신청서 초안 만들기"):
             chosen = next(it for it in items if it.get("name") == pick)
-            ok_draft = use_quota("draft")
+            if not has_official_form(chosen):
+                # 공식 양식이 없으면 아무 틀에 맞춘 초안은 실제 신청에 못 쓰므로, AI를 부르지 않고 안내만 보여 줌
+                st.session_state.draft = no_form_guide(chosen)
+                ok_draft = None
+            else:
+                ok_draft = use_quota("draft")
+        else:
+            ok_draft = None
+        if ok_draft is not None:
             quota_box.caption(quota_text())  # 방금 쓴 횟수를 바로 반영
             if not ok_draft:
                 st.warning(LIMIT_MSG)
