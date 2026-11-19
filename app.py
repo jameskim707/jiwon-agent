@@ -608,6 +608,18 @@ def no_form_guide(item):
     name = one(item.get("name")) or "이 사업"
     agency = one(item.get("agency"))
     url = str(item.get("url", ""))
+    if has_official_form(item):
+        # 공식 사이트에서 양식 링크를 찾은 경우: 그 링크를 맨 위에
+        out = [f"## {name} 신청 준비", "",
+               "공식 사이트에서 신청서·첨부 파일을 찾았어요. 아래 파일을 내려받아 양식의 칸에 직접 적어 주세요. "
+               "기관마다 양식이 달라서 일반 틀의 초안은 만들지 않았어요.", "",
+               "### 공식 신청서·첨부 파일"]
+        out += [f"- {one(f.get('text'))}: {f.get('url')}" for f in item["forms"][:6]]
+        out += ["", "### 준비할 서류 (공고 원문 기준)"]
+        docs = item.get("documents") or []
+        out += [f"- ☐ {one(x)}" for x in docs] if docs else ["- 원문에서 찾지 못했어요. 공고 원문과 첨부파일에서 꼭 확인해 주세요."]
+        out += ["", f"공고 원문: {item.get('url')}", "", "※ 최종 자격과 마감일, 필요 서류는 공고 원문에서 꼭 확인하세요."]
+        return "\n".join(out)
     out = [f"## {name} 신청 준비", "",
            "이 사업은 공식 신청 양식을 공고 페이지에서 찾지 못해서 초안을 만들지 않았어요. "
            "기관마다 정해진 양식이 따로 있어서, 아무 틀에 맞춘 초안은 실제 신청에 쓸 수 없어요.", "",
@@ -876,20 +888,18 @@ if items:
             render_card(it)
     st.caption("최종 자격과 마감일은 반드시 공고 원문에서 확인하세요.")
 
-    st.subheader("📝 신청서 초안 만들기")
-    st.caption("기관마다 지정된 신청 양식이 달라요. 공식 사이트에서 양식 파일을 찾은 사업만 초안을 써 드려요. "
-               "양식을 찾지 못한 사업은 양식 받는 곳과 준비 서류를 알려 드려요.")
+    st.subheader("📝 신청 준비하기")
+    st.caption("기관마다 지정된 신청 양식이 달라요. 사업을 고르면 공식 신청서 파일(찾은 경우)이나 양식 받는 곳, "
+               "준비할 서류를 정리해 드려요. 양식은 직접 내려받아 칸에 맞춰 적어 주세요.")
     names = [it.get("name", "") for it in items if it.get("verdict") != "해당 없음"]
     if names:
-        pick = st.selectbox("어떤 사업의 신청서를 쓸까요?", names)
-        if st.button("신청서 초안 만들기"):
+        pick = st.selectbox("어떤 사업을 신청할까요?", names)
+        if st.button("신청 준비 안내 보기"):
             chosen = next(it for it in items if it.get("name") == pick)
-            if not has_official_form(chosen):
-                # 공식 양식이 없으면 아무 틀에 맞춘 초안은 실제 신청에 못 쓰므로, AI를 부르지 않고 안내만 보여 줌
-                st.session_state.draft = no_form_guide(chosen)
-                ok_draft = None
-            else:
-                ok_draft = use_quota("draft")
+            # 양식 파일 속 칸을 아직 읽지 못하므로, 아무 틀에 맞춘 초안은 실제 신청에 못 씀.
+            # 그래서 AI를 부르지 않고 '공식 양식 받는 곳 + 준비 서류' 안내만 보여 줌 (양식 칸 읽기는 다음 단계)
+            st.session_state.draft = no_form_guide(chosen)
+            ok_draft = None
         else:
             ok_draft = None
         if ok_draft is not None:
@@ -910,4 +920,4 @@ if items:
                     st.session_state.draft = head + body_text
         if st.session_state.get("draft"):
             st.markdown(st.session_state.draft)
-            st.download_button("📥 초안 내려받기 (.txt)", st.session_state.draft, file_name="신청서_초안.txt")
+            st.download_button("📥 안내 내려받기 (.txt)", st.session_state.draft, file_name="신청_준비_안내.txt")
